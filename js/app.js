@@ -18,6 +18,9 @@
     text: "The student uprising in Alma-Ata that reshaped Kazakhstan",
   };
 
+  const PROGRESS_KEY = "jeltoqsan-progress-v1";
+  const RESUME_DISMISS_KEY = "jeltoqsan-resume-dismissed";
+
   const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const hasGsap =
     typeof gsap !== "undefined" &&
@@ -30,6 +33,87 @@
 
   let activeMilestone = 0;
   let toastTimer = null;
+  let cinemaBuilt = false;
+  let cinemaOpen = false;
+  let soundEnabled = false;
+
+  const ambientSound = (() => {
+    let ctx = null;
+    let master = null;
+    let wind = null;
+
+    function noiseBuffer(context, seconds) {
+      const n = context.sampleRate * seconds;
+      const buf = context.createBuffer(1, n, context.sampleRate);
+      const d = buf.getChannelData(0);
+      let last = 0;
+      for (let i = 0; i < n; i++) {
+        const white = Math.random() * 2 - 1;
+        last = (last + 0.02 * white) / 1.02;
+        d[i] = last * 2.8;
+      }
+      return buf;
+    }
+
+    return {
+      start() {
+        if (ctx) {
+          ctx.resume();
+          return true;
+        }
+        try {
+          ctx = new (window.AudioContext || window.webkitAudioContext)();
+          master = ctx.createGain();
+          master.gain.value = 0.06;
+          master.connect(ctx.destination);
+
+          const src = ctx.createBufferSource();
+          src.buffer = noiseBuffer(ctx, 3);
+          src.loop = true;
+          const filter = ctx.createBiquadFilter();
+          filter.type = "lowpass";
+          filter.frequency.value = 520;
+          const windGain = ctx.createGain();
+          windGain.gain.value = 0.85;
+          src.connect(filter);
+          filter.connect(windGain);
+          windGain.connect(master);
+          src.start();
+          wind = src;
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      stop() {
+        if (wind) {
+          try {
+            wind.stop();
+          } catch {
+            /* already stopped */
+          }
+        }
+        if (ctx) {
+          ctx.close();
+        }
+        ctx = null;
+        master = null;
+        wind = null;
+      },
+      setMood(mood) {
+        if (!master || !ctx) return;
+        const levels = {
+          spark: 0.045,
+          gathering: 0.065,
+          cordon: 0.08,
+          blizzard: 0.13,
+          aftermath: 0.055,
+        };
+        master.gain.setTargetAtTime(levels[mood] || 0.06, ctx.currentTime, 0.4);
+      },
+      isActive: () => !!ctx,
+    };
+  })();
 
   function getScrollOffset() {
     const nav = document.getElementById("site-nav");
@@ -141,6 +225,37 @@
   function setStoryMood(index) {
     const mood = MILESTONE_META[index]?.mood || "spark";
     document.body.dataset.mood = mood;
+    if (soundEnabled) ambientSound.setMood(mood);
+  }
+
+  function saveReadingProgress(index) {
+    if (index < 1) return;
+    try {
+      localStorage.setItem(
+        PROGRESS_KEY,
+        JSON.stringify({ milestone: index, chapter: MILESTONE_META[index]?.chapter, ts: Date.now() })
+      );
+    } catch {
+      /* storage full / private mode */
+    }
+  }
+
+  function hideResumeBar() {
+    const bar = document.getElementById("resume-bar");
+    if (!bar) return;
+    bar.hidden = true;
+    bar.setAttribute("aria-hidden", "true");
+  }
+
+  function dismissResumeBar(permanent = true) {
+    hideResumeBar();
+    if (permanent) {
+      try {
+        localStorage.setItem(RESUME_DISMISS_KEY, "1");
+      } catch {
+        /* ignore */
+      }
+    }
   }
 
   function updateMapActive(index) {
@@ -183,6 +298,8 @@
     setStoryMood(index);
     updateMapActive(index);
     if (updateHash) updateMilestoneHash(index);
+    saveReadingProgress(index);
+    if (cinemaOpen) syncCinemaSlide(index);
   }
 
   function goToMilestone(index, options = {}) {
@@ -675,7 +792,7 @@
 
   function initKeyboardNav() {
     document.addEventListener("keydown", (e) => {
-      if (e.target.closest("dialog, input, textarea, [contenteditable]")) return;
+      if (cinemaOpen || e.target.closest("dialog, input, textarea, [contenteditable]")) return;
 
       const timeline = document.getElementById("timeline");
       if (!timeline) return;
@@ -988,6 +1105,239 @@
     });
   }
 
+  function buildCinemaSlides() {
+    if (cinemaBuilt) return;
+    const track = document.getElementById("cinema-track");
+    const dots = document.getElementById("cinema-dots");
+    if (!track || !dots) return;
+
+    document.querySelectorAll(".milestone-row").forEach((row) => {
+      const i = parseInt(row.dataset.index, 10);
+      const img = row.querySelector(".milestone-media img");
+      const slide = document.createElement("article");
+      slide.className = "cinema-slide";
+      slide.dataset.index = String(i);
+
+      const bg = img
+        ? `<img src="${img.src}" alt="${(img.alt || "").replace(/"/g, "&quot;")}" />`
+        : "";
+      const indexTxt = row.querySelector(".milestone-index")?.textContent || "";
+      const dateTxt = row.querySelector(".milestone-date")?.textContent || "";
+      const title = row.querySelector(".milestone-title")?.textContent || "";
+      const quote = row.querySelector(".milestone-quote")?.textContent || "";
+      const text = row.querySelector(".milestone-text")?.textContent || "";
+
+      slide.innerHTML = `
+        <div class="cinema-slide-bg">${bg}</div>
+        <div class="cinema-slide-body">
+          <div class="cinema-slide-meta">
+            <span class="meta-index">${indexTxt}</span>
+            <span class="meta-date">${dateTxt}</span>
+          </div>
+          <h3>${title}</h3>
+          <blockquote class="cinema-slide-quote">${quote}</blockquote>
+          <p class="cinema-slide-text">${text}</p>
+        </div>
+      `;
+      track.appendChild(slide);
+
+      const dot = document.createElement("button");
+      dot.type = "button";
+      dot.className = "cinema-dot";
+      dot.dataset.index = String(i);
+      dot.setAttribute("aria-label", `Go to ${MILESTONE_META[i]?.chapter || "chapter"}`);
+      dot.addEventListener("click", () => cinemaGoTo(i));
+      dots.appendChild(dot);
+    });
+
+    cinemaBuilt = true;
+  }
+
+  function syncCinemaSlide(index) {
+    const track = document.getElementById("cinema-track");
+    if (!track) return;
+
+    track.style.transform = `translateX(-${index * 100}%)`;
+    document.querySelectorAll(".cinema-dot").forEach((dot, j) => {
+      dot.classList.toggle("is-active", j === index);
+    });
+
+    const counter = document.getElementById("cinema-counter");
+    const title = document.getElementById("cinema-title");
+    if (counter) counter.textContent = `${String(index + 1).padStart(2, "0")} / ${MILESTONE_COUNT}`;
+    if (title) title.textContent = MILESTONE_META[index]?.chapter || "";
+
+    const prev = document.getElementById("cinema-prev");
+    const next = document.getElementById("cinema-next");
+    if (prev) prev.disabled = index <= 0;
+    if (next) next.disabled = index >= MILESTONE_COUNT - 1;
+  }
+
+  function cinemaGoTo(index) {
+    const i = Math.max(0, Math.min(MILESTONE_COUNT - 1, index));
+    syncCinemaSlide(i);
+    highlightMilestone(i, { updateHash: true });
+  }
+
+  function openCinema(startIndex) {
+    buildCinemaSlides();
+    const el = document.getElementById("cinema-mode");
+    if (!el) return;
+
+    cinemaOpen = true;
+    el.hidden = false;
+    el.setAttribute("aria-hidden", "false");
+    document.body.classList.add("cinema-open");
+    cinemaGoTo(startIndex ?? activeMilestone);
+    document.getElementById("cinema-close")?.focus();
+  }
+
+  function closeCinema() {
+    const el = document.getElementById("cinema-mode");
+    if (!el) return;
+
+    cinemaOpen = false;
+    el.hidden = true;
+    el.setAttribute("aria-hidden", "true");
+    document.body.classList.remove("cinema-open");
+
+    const row = document.querySelector(`.milestone-row[data-index="${activeMilestone}"]`);
+    if (row) scrollToTarget(row, { duration: prefersReducedMotion ? 0 : 0.5 });
+  }
+
+  function initCinema() {
+    document.getElementById("btn-cinema")?.addEventListener("click", () => {
+      setActiveSection("timeline");
+      openCinema(activeMilestone);
+    });
+
+    document.getElementById("cinema-close")?.addEventListener("click", closeCinema);
+    document.getElementById("cinema-prev")?.addEventListener("click", () => {
+      if (activeMilestone > 0) cinemaGoTo(activeMilestone - 1);
+    });
+    document.getElementById("cinema-next")?.addEventListener("click", () => {
+      if (activeMilestone < MILESTONE_COUNT - 1) cinemaGoTo(activeMilestone + 1);
+    });
+
+    document.addEventListener("keydown", (e) => {
+      if (!cinemaOpen) return;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closeCinema();
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        if (activeMilestone < MILESTONE_COUNT - 1) cinemaGoTo(activeMilestone + 1);
+      } else if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        if (activeMilestone > 0) cinemaGoTo(activeMilestone - 1);
+      }
+    });
+
+    const viewport = document.getElementById("cinema-viewport");
+    if (!viewport || prefersReducedMotion) return;
+
+    let startX = 0;
+    viewport.addEventListener(
+      "touchstart",
+      (e) => {
+        startX = e.touches[0].clientX;
+      },
+      { passive: true }
+    );
+    viewport.addEventListener(
+      "touchend",
+      (e) => {
+        const dx = e.changedTouches[0].clientX - startX;
+        if (Math.abs(dx) < 50) return;
+        if (dx < 0 && activeMilestone < MILESTONE_COUNT - 1) cinemaGoTo(activeMilestone + 1);
+        if (dx > 0 && activeMilestone > 0) cinemaGoTo(activeMilestone - 1);
+      },
+      { passive: true }
+    );
+  }
+
+  function initAmbientSound() {
+    const btn = document.getElementById("sound-toggle");
+    if (!btn) return;
+
+    const setPressed = (on) => {
+      btn.setAttribute("aria-pressed", on ? "true" : "false");
+      btn.setAttribute("aria-label", on ? "Ambient sound (on)" : "Ambient sound (off)");
+    };
+
+    btn.addEventListener("click", () => {
+      if (soundEnabled) {
+        soundEnabled = false;
+        ambientSound.stop();
+        setPressed(false);
+        showToast("Sound off");
+        return;
+      }
+      if (ambientSound.start()) {
+        soundEnabled = true;
+        setPressed(true);
+        ambientSound.setMood(MILESTONE_META[activeMilestone]?.mood || "spark");
+        showToast("Ambient sound on");
+      } else {
+        showToast("Sound unavailable in this browser");
+      }
+    });
+  }
+
+  function initResume() {
+    const bar = document.getElementById("resume-bar");
+    if (!bar) return;
+
+    hideResumeBar();
+
+    if (window.location.hash) return;
+
+    try {
+      if (localStorage.getItem(RESUME_DISMISS_KEY) === "1") return;
+    } catch {
+      return;
+    }
+
+    let data = null;
+    try {
+      data = JSON.parse(localStorage.getItem(PROGRESS_KEY));
+    } catch {
+      return;
+    }
+
+    if (!data || typeof data.milestone !== "number" || data.milestone < 1) return;
+
+    const label = document.getElementById("resume-label");
+    if (label) {
+      label.textContent = data.chapter || MILESTONE_META[data.milestone]?.chapter || "Timeline";
+    }
+
+    const showBar = () => {
+      const hero = document.getElementById("hero");
+      if (!hero) return;
+      const heroBottom = hero.getBoundingClientRect().bottom;
+      if (heroBottom > window.innerHeight * 0.35) {
+        hideResumeBar();
+        return;
+      }
+      bar.hidden = false;
+      bar.setAttribute("aria-hidden", "false");
+    };
+
+    const onContinue = () => {
+      dismissResumeBar(false);
+      goToMilestone(data.milestone);
+      setActiveSection("timeline");
+    };
+
+    document.getElementById("resume-go")?.addEventListener("click", onContinue);
+    document.getElementById("resume-dismiss")?.addEventListener("click", () => dismissResumeBar(true));
+    document.getElementById("resume-close")?.addEventListener("click", () => dismissResumeBar(true));
+
+    window.addEventListener("scroll", showBar, { passive: true });
+    showBar();
+  }
+
   function init() {
     initReadingTime();
     initImageFallback();
@@ -1010,6 +1360,9 @@
     initCopyLinks();
     initLightbox();
     initHashNavigation();
+    initCinema();
+    initAmbientSound();
+    initResume();
     handleInitialHash();
 
     if (hasGsap) ScrollTrigger.refresh();

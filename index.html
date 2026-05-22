@@ -66,9 +66,23 @@
     <span id="clock-chapter" class="story-clock-chapter">The Spark</span>
   </aside>
 
-  <button type="button" id="atmo-toggle" class="atmo-toggle" aria-pressed="false" aria-label="Toggle winter atmosphere" title="Winter atmosphere">
-    <span aria-hidden="true">❄</span>
-  </button>
+  <div class="fab-stack" aria-label="Atmosphere controls">
+    <button type="button" id="sound-toggle" class="fab-btn" aria-pressed="false" aria-label="Ambient sound (off)" title="Ambient sound">
+      <span class="fab-icon fab-icon--sound" aria-hidden="true">♪</span>
+    </button>
+    <button type="button" id="atmo-toggle" class="fab-btn" aria-pressed="false" aria-label="Toggle winter atmosphere" title="Winter atmosphere">
+      <span aria-hidden="true">❄</span>
+    </button>
+  </div>
+
+  <div id="resume-bar" class="resume-bar" hidden aria-hidden="true">
+    <p class="resume-bar-text">Continue from <strong id="resume-label">The Spark</strong>?</p>
+    <div class="resume-bar-actions">
+      <button type="button" id="resume-go" class="btn-primary btn-primary--sm">Continue</button>
+      <button type="button" id="resume-dismiss" class="btn-text">Not now</button>
+    </div>
+    <button type="button" id="resume-close" class="resume-close" aria-label="Close">×</button>
+  </div>
 
   <div id="app-loader" class="app-loader" aria-hidden="true">
     <p class="loader-title">Jeltoqsan</p>
@@ -232,6 +246,9 @@
           <p class="eyebrow">Chronology</p>
           <h2 id="timeline-heading">Hour-by-Hour <span class="text-crimson">Timeline</span></h2>
           <p class="section-desc">Five turning points · State Archive of Almaty</p>
+          <div class="timeline-tools">
+            <button type="button" id="btn-cinema" class="btn-ghost btn-ghost--sm">▶ Cinema mode</button>
+          </div>
         </header>
 
         <div class="timeline-jump-wrap" id="timeline-sticky">
@@ -429,6 +446,23 @@
       <figcaption id="lightbox-caption"></figcaption>
     </figure>
   </dialog>
+
+  <div id="cinema-mode" class="cinema-mode" hidden aria-hidden="true" role="dialog" aria-modal="true" aria-label="Cinema timeline mode">
+    <header class="cinema-header">
+      <button type="button" id="cinema-close" class="btn-ghost btn-ghost--sm">✕ Exit</button>
+      <span id="cinema-counter" class="cinema-counter">01 / 05</span>
+      <span id="cinema-title" class="cinema-title-label">The Spark</span>
+    </header>
+    <div class="cinema-viewport" id="cinema-viewport">
+      <div class="cinema-track" id="cinema-track"></div>
+    </div>
+    <footer class="cinema-footer">
+      <button type="button" id="cinema-prev" class="btn-ghost btn-ghost--sm" aria-label="Previous chapter">← Prev</button>
+      <div class="cinema-dots" id="cinema-dots" aria-hidden="true"></div>
+      <button type="button" id="cinema-next" class="btn-ghost btn-ghost--sm" aria-label="Next chapter">Next →</button>
+    </footer>
+    <p class="cinema-hint">Swipe · Arrow keys · <kbd>Esc</kbd> to exit</p>
+  </div>
 
   <div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true" hidden></div>
 
