@@ -40,78 +40,149 @@
   const ambientSound = (() => {
     let ctx = null;
     let master = null;
-    let wind = null;
+    const sources = [];
 
-    function noiseBuffer(context, seconds) {
-      const n = context.sampleRate * seconds;
+    const MOOD_LEVELS = {
+      spark: 0.12,
+      gathering: 0.16,
+      cordon: 0.19,
+      blizzard: 0.28,
+      aftermath: 0.14,
+    };
+
+    function brownNoiseBuffer(context, seconds) {
+      const n = Math.floor(context.sampleRate * seconds);
       const buf = context.createBuffer(1, n, context.sampleRate);
       const d = buf.getChannelData(0);
       let last = 0;
       for (let i = 0; i < n; i++) {
         const white = Math.random() * 2 - 1;
         last = (last + 0.02 * white) / 1.02;
-        d[i] = last * 2.8;
+        d[i] = last * 12;
       }
       return buf;
     }
 
-    return {
-      start() {
-        if (ctx) {
-          ctx.resume();
-          return true;
-        }
-        try {
-          ctx = new (window.AudioContext || window.webkitAudioContext)();
-          master = ctx.createGain();
-          master.gain.value = 0.06;
-          master.connect(ctx.destination);
+    async function resumeContext() {
+      if (!ctx || ctx.state === "closed") return false;
+      if (ctx.state === "suspended") {
+        await ctx.resume();
+      }
+      return ctx.state === "running";
+    }
 
-          const src = ctx.createBufferSource();
-          src.buffer = noiseBuffer(ctx, 3);
-          src.loop = true;
-          const filter = ctx.createBiquadFilter();
-          filter.type = "lowpass";
-          filter.frequency.value = 520;
-          const windGain = ctx.createGain();
-          windGain.gain.value = 0.85;
-          src.connect(filter);
-          filter.connect(windGain);
-          windGain.connect(master);
-          src.start();
-          wind = src;
+    function buildGraph() {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) throw new Error("Web Audio not supported");
+
+      ctx = new Ctx();
+      master = ctx.createGain();
+      master.gain.value = 0;
+      master.connect(ctx.destination);
+
+      const noise = ctx.createBufferSource();
+      noise.buffer = brownNoiseBuffer(ctx, 4);
+      noise.loop = true;
+
+      const highpass = ctx.createBiquadFilter();
+      highpass.type = "highpass";
+      highpass.frequency.value = 120;
+
+      const lowpass = ctx.createBiquadFilter();
+      lowpass.type = "lowpass";
+      lowpass.frequency.value = 900;
+
+      const noiseGain = ctx.createGain();
+      noiseGain.gain.value = 0.5;
+
+      noise.connect(highpass);
+      highpass.connect(lowpass);
+      lowpass.connect(noiseGain);
+      noiseGain.connect(master);
+      noise.start(0);
+      sources.push(noise);
+
+      const rumble = ctx.createOscillator();
+      rumble.type = "sine";
+      rumble.frequency.value = 52;
+      const rumbleGain = ctx.createGain();
+      rumbleGain.gain.value = 0.12;
+      rumble.connect(rumbleGain);
+      rumbleGain.connect(master);
+      rumble.start(0);
+      sources.push(rumble);
+
+      const hiss = ctx.createOscillator();
+      hiss.type = "triangle";
+      hiss.frequency.value = 180;
+      const hissGain = ctx.createGain();
+      hissGain.gain.value = 0.04;
+      hiss.connect(hissGain);
+      hissGain.connect(master);
+      hiss.start(0);
+      sources.push(hiss);
+    }
+
+    return {
+      async start() {
+        try {
+          if (ctx && ctx.state !== "closed") {
+            const running = await resumeContext();
+            if (running && master) {
+              master.gain.setTargetAtTime(0.14, ctx.currentTime, 0.35);
+            }
+            return running;
+          }
+
+          buildGraph();
+          const running = await resumeContext();
+          if (!running || !master) return false;
+
+          master.gain.setTargetAtTime(0.14, ctx.currentTime, 0.6);
           return true;
-        } catch {
+        } catch (err) {
+          console.warn("Ambient sound failed:", err);
           return false;
         }
       },
       stop() {
-        if (wind) {
+        sources.forEach((node) => {
           try {
-            wind.stop();
+            node.stop();
           } catch {
             /* already stopped */
           }
+        });
+        sources.length = 0;
+
+        if (master && ctx && ctx.state !== "closed") {
+          try {
+            master.gain.setTargetAtTime(0, ctx.currentTime, 0.15);
+          } catch {
+            /* ignore */
+          }
         }
-        if (ctx) {
-          ctx.close();
-        }
-        ctx = null;
-        master = null;
-        wind = null;
+
+        window.setTimeout(() => {
+          try {
+            ctx?.close();
+          } catch {
+            /* ignore */
+          }
+          ctx = null;
+          master = null;
+        }, 200);
       },
       setMood(mood) {
-        if (!master || !ctx) return;
-        const levels = {
-          spark: 0.045,
-          gathering: 0.065,
-          cordon: 0.08,
-          blizzard: 0.13,
-          aftermath: 0.055,
-        };
-        master.gain.setTargetAtTime(levels[mood] || 0.06, ctx.currentTime, 0.4);
+        if (!master || !ctx || ctx.state !== "running") return;
+        const level = MOOD_LEVELS[mood] || 0.14;
+        master.gain.setTargetAtTime(level, ctx.currentTime, 0.5);
       },
-      isActive: () => !!ctx,
+      async resumeIfNeeded() {
+        if (!ctx || !soundEnabled) return;
+        await resumeContext();
+      },
+      isActive: () => !!ctx && ctx.state !== "closed",
     };
   })();
 
@@ -1265,7 +1336,7 @@
       btn.setAttribute("aria-label", on ? "Ambient sound (on)" : "Ambient sound (off)");
     };
 
-    btn.addEventListener("click", () => {
+    const toggleSound = async () => {
       if (soundEnabled) {
         soundEnabled = false;
         ambientSound.stop();
@@ -1273,13 +1344,23 @@
         showToast("Sound off");
         return;
       }
-      if (ambientSound.start()) {
+
+      const ok = await ambientSound.start();
+      if (ok) {
         soundEnabled = true;
         setPressed(true);
         ambientSound.setMood(MILESTONE_META[activeMilestone]?.mood || "spark");
-        showToast("Ambient sound on");
+        showToast("Sound on — winter ambience");
       } else {
-        showToast("Sound unavailable in this browser");
+        showToast("Enable sound: tap ♪ again or check volume");
+      }
+    };
+
+    btn.addEventListener("click", toggleSound);
+
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible" && soundEnabled) {
+        ambientSound.resumeIfNeeded();
       }
     });
   }
