@@ -37,18 +37,25 @@
   let cinemaOpen = false;
   let soundEnabled = false;
 
+  const isTouchDevice =
+    "ontouchstart" in window || navigator.maxTouchPoints > 0 || window.matchMedia("(pointer: coarse)").matches;
+
   const ambientSound = (() => {
     let ctx = null;
     let master = null;
     const sources = [];
 
     const MOOD_LEVELS = {
-      spark: 0.12,
-      gathering: 0.16,
-      cordon: 0.19,
-      blizzard: 0.28,
-      aftermath: 0.14,
+      spark: isTouchDevice ? 0.2 : 0.12,
+      gathering: isTouchDevice ? 0.26 : 0.16,
+      cordon: isTouchDevice ? 0.3 : 0.19,
+      blizzard: isTouchDevice ? 0.42 : 0.28,
+      aftermath: isTouchDevice ? 0.22 : 0.14,
     };
+
+    function getAudioContextClass() {
+      return window.AudioContext || window.webkitAudioContext;
+    }
 
     function brownNoiseBuffer(context, seconds) {
       const n = Math.floor(context.sampleRate * seconds);
@@ -58,24 +65,47 @@
       for (let i = 0; i < n; i++) {
         const white = Math.random() * 2 - 1;
         last = (last + 0.02 * white) / 1.02;
-        d[i] = last * 12;
+        d[i] = last * (isTouchDevice ? 16 : 12);
       }
       return buf;
     }
 
-    async function resumeContext() {
-      if (!ctx || ctx.state === "closed") return false;
-      if (ctx.state === "suspended") {
-        await ctx.resume();
+    function playSilentUnlock(context) {
+      const buffer = context.createBuffer(1, 1, context.sampleRate);
+      const source = context.createBufferSource();
+      source.buffer = buffer;
+      source.connect(context.destination);
+      source.start(0);
+      source.stop(context.currentTime + 0.05);
+    }
+
+    function tearDownSources() {
+      sources.forEach((node) => {
+        try {
+          node.stop();
+          node.disconnect();
+        } catch {
+          /* already stopped */
+        }
+      });
+      sources.length = 0;
+      master = null;
+    }
+
+    function ensureContext() {
+      const Ctx = getAudioContextClass();
+      if (!Ctx) return false;
+      if (!ctx || ctx.state === "closed") {
+        ctx = new Ctx({ latencyHint: "interactive" });
+        playSilentUnlock(ctx);
       }
-      return ctx.state === "running";
+      return true;
     }
 
     function buildGraph() {
-      const Ctx = window.AudioContext || window.webkitAudioContext;
-      if (!Ctx) throw new Error("Web Audio not supported");
+      if (!ensureContext()) throw new Error("Web Audio not supported");
+      tearDownSources();
 
-      ctx = new Ctx();
       master = ctx.createGain();
       master.gain.value = 0;
       master.connect(ctx.destination);
@@ -86,14 +116,14 @@
 
       const highpass = ctx.createBiquadFilter();
       highpass.type = "highpass";
-      highpass.frequency.value = 120;
+      highpass.frequency.value = 100;
 
       const lowpass = ctx.createBiquadFilter();
       lowpass.type = "lowpass";
-      lowpass.frequency.value = 900;
+      lowpass.frequency.value = isTouchDevice ? 1100 : 900;
 
       const noiseGain = ctx.createGain();
-      noiseGain.gain.value = 0.5;
+      noiseGain.gain.value = isTouchDevice ? 0.65 : 0.5;
 
       noise.connect(highpass);
       highpass.connect(lowpass);
@@ -104,85 +134,96 @@
 
       const rumble = ctx.createOscillator();
       rumble.type = "sine";
-      rumble.frequency.value = 52;
+      rumble.frequency.value = 48;
       const rumbleGain = ctx.createGain();
-      rumbleGain.gain.value = 0.12;
+      rumbleGain.gain.value = isTouchDevice ? 0.18 : 0.12;
       rumble.connect(rumbleGain);
       rumbleGain.connect(master);
       rumble.start(0);
       sources.push(rumble);
+    }
 
-      const hiss = ctx.createOscillator();
-      hiss.type = "triangle";
-      hiss.frequency.value = 180;
-      const hissGain = ctx.createGain();
-      hissGain.gain.value = 0.04;
-      hiss.connect(hissGain);
-      hissGain.connect(master);
-      hiss.start(0);
-      sources.push(hiss);
+    function primeFromGesture() {
+      if (!ensureContext()) return false;
+      playSilentUnlock(ctx);
+      if (ctx.state === "suspended") {
+        ctx.resume();
+      }
+      return true;
+    }
+
+    function applyMasterLevel(mood) {
+      if (!master || !ctx) return;
+      const level = MOOD_LEVELS[mood] || MOOD_LEVELS.spark;
+      master.gain.cancelScheduledValues(ctx.currentTime);
+      master.gain.setTargetAtTime(level, ctx.currentTime, 0.35);
     }
 
     return {
-      async start() {
-        try {
-          if (ctx && ctx.state !== "closed") {
-            const running = await resumeContext();
-            if (running && master) {
-              master.gain.setTargetAtTime(0.14, ctx.currentTime, 0.35);
-            }
-            return running;
-          }
+      primeFromGesture,
 
-          buildGraph();
-          const running = await resumeContext();
-          if (!running || !master) return false;
-
-          master.gain.setTargetAtTime(0.14, ctx.currentTime, 0.6);
-          return true;
-        } catch (err) {
-          console.warn("Ambient sound failed:", err);
-          return false;
-        }
-      },
-      stop() {
-        sources.forEach((node) => {
+      startFromGesture() {
+        return new Promise((resolve) => {
           try {
-            node.stop();
-          } catch {
-            /* already stopped */
+            if (!primeFromGesture()) {
+              resolve(false);
+              return;
+            }
+
+            const afterResume = () => {
+              try {
+                if (!master || !sources.length) buildGraph();
+                applyMasterLevel("spark");
+                resolve(ctx.state === "running");
+              } catch (err) {
+                console.warn("Ambient build failed:", err);
+                resolve(false);
+              }
+            };
+
+            if (ctx.state === "running") {
+              afterResume();
+              return;
+            }
+
+            ctx.resume().then(afterResume).catch(() => resolve(false));
+          } catch (err) {
+            console.warn("Ambient sound failed:", err);
+            resolve(false);
           }
         });
-        sources.length = 0;
+      },
 
-        if (master && ctx && ctx.state !== "closed") {
+      stop() {
+        tearDownSources();
+        if (master && ctx && ctx.state === "running") {
           try {
-            master.gain.setTargetAtTime(0, ctx.currentTime, 0.15);
+            master.gain.setTargetAtTime(0, ctx.currentTime, 0.12);
           } catch {
             /* ignore */
           }
         }
-
-        window.setTimeout(() => {
+        if (ctx && ctx.state === "running") {
           try {
-            ctx?.close();
+            ctx.suspend();
           } catch {
             /* ignore */
           }
-          ctx = null;
-          master = null;
-        }, 200);
+        }
       },
+
       setMood(mood) {
-        if (!master || !ctx || ctx.state !== "running") return;
-        const level = MOOD_LEVELS[mood] || 0.14;
-        master.gain.setTargetAtTime(level, ctx.currentTime, 0.5);
+        if (!soundEnabled) return;
+        applyMasterLevel(mood);
       },
-      async resumeIfNeeded() {
-        if (!ctx || !soundEnabled) return;
-        await resumeContext();
+
+      resumeIfNeeded() {
+        if (!ctx || !soundEnabled || ctx.state === "closed") return;
+        primeFromGesture();
+        if (ctx.state === "suspended") ctx.resume();
       },
-      isActive: () => !!ctx && ctx.state !== "closed",
+
+      isActive: () => soundEnabled && !!ctx && ctx.state !== "closed",
     };
   })();
 
@@ -1336,27 +1377,50 @@
       btn.setAttribute("aria-label", on ? "Ambient sound (on)" : "Ambient sound (off)");
     };
 
-    const toggleSound = async () => {
+    let toggling = false;
+
+    const toggleSound = () => {
+      if (toggling) return;
+      toggling = true;
+
       if (soundEnabled) {
         soundEnabled = false;
         ambientSound.stop();
         setPressed(false);
         showToast("Sound off");
+        toggling = false;
         return;
       }
 
-      const ok = await ambientSound.start();
-      if (ok) {
-        soundEnabled = true;
-        setPressed(true);
-        ambientSound.setMood(MILESTONE_META[activeMilestone]?.mood || "spark");
-        showToast("Sound on — winter ambience");
-      } else {
-        showToast("Enable sound: tap ♪ again or check volume");
-      }
+      ambientSound.startFromGesture().then((ok) => {
+        toggling = false;
+        if (ok) {
+          soundEnabled = true;
+          setPressed(true);
+          ambientSound.setMood(MILESTONE_META[activeMilestone]?.mood || "spark");
+          showToast(
+            isTouchDevice
+              ? "Sound on — check volume & silent switch"
+              : "Sound on — winter ambience"
+          );
+        } else {
+          showToast("Tap ♪ again · allow audio in browser");
+        }
+      });
     };
 
-    btn.addEventListener("click", toggleSound);
+    btn.addEventListener(
+      "pointerdown",
+      () => {
+        if (!soundEnabled) ambientSound.primeFromGesture();
+      },
+      { passive: true }
+    );
+
+    btn.addEventListener("pointerup", (e) => {
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      toggleSound();
+    });
 
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible" && soundEnabled) {
