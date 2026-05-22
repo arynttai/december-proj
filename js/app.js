@@ -1,10 +1,9 @@
 /**
- * Jeltoqsan — app bootstrap with GSAP + native fallbacks
+ * Jeltoqsan — mobile-first interactions
  */
 (function () {
   "use strict";
 
-  const NAV_OFFSET = 52;
   const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const hasGsap =
     typeof gsap !== "undefined" &&
@@ -15,16 +14,21 @@
     gsap.registerPlugin(ScrollTrigger, ScrollToPlugin);
   }
 
-  /** Smooth or instant scroll to element or selector */
+  function getScrollOffset() {
+    const nav = document.getElementById("site-nav");
+    let h = nav ? nav.offsetHeight : 52;
+    const jumpWrap = document.querySelector(".timeline-jump-wrap");
+    if (jumpWrap && window.getComputedStyle(jumpWrap).position === "sticky") {
+      h += jumpWrap.offsetHeight;
+    }
+    return h + 10;
+  }
+
   function scrollToTarget(target, options = {}) {
-    const offset = options.offset ?? NAV_OFFSET;
-    const duration = options.duration ?? (prefersReducedMotion ? 0 : 0.75);
+    const offset = options.offset ?? getScrollOffset();
+    const duration = options.duration ?? (prefersReducedMotion ? 0 : 0.7);
 
-    let el =
-      typeof target === "string"
-        ? document.querySelector(target)
-        : target;
-
+    const el = typeof target === "string" ? document.querySelector(target) : target;
     if (!el) return;
 
     if (hasGsap && duration > 0) {
@@ -38,7 +42,7 @@
     }
 
     const y = el.getBoundingClientRect().top + window.scrollY - offset;
-    window.scrollTo({ top: y, behavior: prefersReducedMotion ? "auto" : "smooth" });
+    window.scrollTo({ top: Math.max(0, y), behavior: prefersReducedMotion ? "auto" : "smooth" });
     options.onComplete?.();
   }
 
@@ -53,9 +57,28 @@
     });
   }
 
-  function setActiveNav(sectionId) {
-    document.querySelectorAll(".nav-link").forEach((link) => {
-      link.classList.toggle("is-active", link.dataset.section === sectionId);
+  function setActiveSection(sectionId) {
+    document.querySelectorAll(".nav-link, .mobile-tab").forEach((el) => {
+      const active = el.dataset.section === sectionId;
+      el.classList.toggle("is-active", active);
+      if (active) el.setAttribute("aria-current", "true");
+      else el.removeAttribute("aria-current");
+    });
+  }
+
+  function scrollChipIntoView(index) {
+    const chip = document.querySelector(`.jump-chip[data-index="${index}"]`);
+    const container = document.getElementById("timeline-jump");
+    if (!chip || !container) return;
+
+    const chipLeft = chip.offsetLeft;
+    const chipWidth = chip.offsetWidth;
+    const containerWidth = container.clientWidth;
+    const scrollLeft = chipLeft - containerWidth / 2 + chipWidth / 2;
+
+    container.scrollTo({
+      left: Math.max(0, scrollLeft),
+      behavior: prefersReducedMotion ? "auto" : "smooth",
     });
   }
 
@@ -64,13 +87,15 @@
       row.classList.toggle("is-highlight", i === index);
     });
     document.querySelectorAll(".jump-chip").forEach((chip, i) => {
-      chip.classList.toggle("is-active", i === index);
-      chip.setAttribute("aria-pressed", i === index ? "true" : "false");
+      const active = i === index;
+      chip.classList.toggle("is-active", active);
+      chip.setAttribute("aria-pressed", active ? "true" : "false");
     });
+    scrollChipIntoView(index);
   }
 
   function bindAnchorScroll() {
-    document.querySelectorAll('a[href^="#"]').forEach((anchor) => {
+    document.querySelectorAll('a[href^="#"]:not(.sr-only)').forEach((anchor) => {
       const href = anchor.getAttribute("href");
       if (!href || href === "#") return;
 
@@ -78,22 +103,23 @@
         const target = document.querySelector(href);
         if (!target) return;
         e.preventDefault();
+        const section = anchor.dataset.section;
+        if (section) setActiveSection(section);
         scrollToTarget(target);
       });
     });
   }
 
   function initNav() {
-    const nav = document.getElementById("site-nav");
     const progress = document.getElementById("scroll-progress");
 
-    nav?.classList.add("is-visible");
-
     const onScroll = () => {
-      const scrollY = window.scrollY;
       const max = document.documentElement.scrollHeight - window.innerHeight;
-      const ratio = max > 0 ? scrollY / max : 0;
-      if (progress) progress.style.width = `${ratio * 100}%`;
+      const ratio = max > 0 ? window.scrollY / max : 0;
+      if (progress) {
+        progress.style.width = `${ratio * 100}%`;
+        progress.setAttribute("aria-valuenow", String(Math.round(ratio * 100)));
+      }
     };
 
     window.addEventListener("scroll", onScroll, { passive: true });
@@ -107,10 +133,10 @@
 
       ScrollTrigger.create({
         trigger: el,
-        start: "top 55%",
-        end: "bottom 45%",
-        onEnter: () => setActiveNav(id),
-        onEnterBack: () => setActiveNav(id),
+        start: "top 58%",
+        end: "bottom 42%",
+        onEnter: () => setActiveSection(id),
+        onEnterBack: () => setActiveSection(id),
       });
     });
   }
@@ -119,14 +145,11 @@
     const btn = document.getElementById("back-top");
     if (!btn) return;
 
-    const toggle = () => {
-      btn.classList.toggle("is-visible", window.scrollY > 320);
-    };
-
+    const toggle = () => btn.classList.toggle("is-visible", window.scrollY > 280);
     window.addEventListener("scroll", toggle, { passive: true });
     toggle();
 
-    btn.addEventListener("click", () => scrollToTarget(document.getElementById("hero") || 0));
+    btn.addEventListener("click", () => scrollToTarget("#hero"));
   }
 
   function initHero() {
@@ -141,9 +164,9 @@
 
     gsap.from(items, {
       opacity: 0,
-      y: 14,
+      y: 18,
       duration: 0.55,
-      stagger: 0.07,
+      stagger: 0.08,
       ease: "power2.out",
       clearProps: "transform",
     });
@@ -157,68 +180,68 @@
 
     highlightMilestone(0);
 
-    rows.forEach((row, index) => {
-      if (hasGsap && !prefersReducedMotion) {
+    const onRowActive = (index) => highlightMilestone(index);
+
+    if (hasGsap && !prefersReducedMotion) {
+      rows.forEach((row, index) => {
         ScrollTrigger.create({
           trigger: row,
-          start: "top 70%",
-          end: "bottom 30%",
-          onEnter: () => highlightMilestone(index),
-          onEnterBack: () => highlightMilestone(index),
+          start: "top 75%",
+          end: "bottom 25%",
+          onEnter: () => onRowActive(index),
+          onEnterBack: () => onRowActive(index),
         });
-      }
-    });
 
-    if (!hasGsap || prefersReducedMotion) {
+        gsap.from(row, {
+          opacity: 0,
+          y: 20,
+          duration: 0.5,
+          ease: "power2.out",
+          scrollTrigger: {
+            trigger: row,
+            start: "top 92%",
+            toggleActions: "play none none none",
+          },
+        });
+      });
+    } else {
       const observer = new IntersectionObserver(
         (entries) => {
           entries.forEach((entry) => {
-            if (entry.isIntersecting) {
-              const index = parseInt(entry.target.dataset.index, 10);
-              if (!Number.isNaN(index)) highlightMilestone(index);
-            }
+            if (!entry.isIntersecting) return;
+            const index = parseInt(entry.target.dataset.index, 10);
+            if (!Number.isNaN(index)) onRowActive(index);
           });
         },
-        { rootMargin: "-35% 0px -45% 0px", threshold: 0 }
+        { rootMargin: "-30% 0px -40% 0px", threshold: 0 }
       );
       rows.forEach((row) => observer.observe(row));
     }
 
     chips.forEach((chip) => {
-      chip.addEventListener("click", () => {
+      const activate = () => {
         const index = parseInt(chip.dataset.index, 10);
         const row = rows[index];
-        if (row) {
-          highlightMilestone(index);
-          scrollToTarget(row, { onComplete: () => highlightMilestone(index) });
-        }
-      });
+        if (!row) return;
+        highlightMilestone(index);
+        scrollToTarget(row, {
+          onComplete: () => highlightMilestone(index),
+        });
+      };
+
+      chip.addEventListener("click", activate);
 
       chip.addEventListener("keydown", (e) => {
-        if (e.key !== "Enter" && e.key !== " ") return;
-        e.preventDefault();
-        chip.click();
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          activate();
+        }
       });
     });
 
     document.getElementById("btn-explore-timeline")?.addEventListener("click", () => {
       scrollToTarget("#timeline");
-    });
-
-    document.addEventListener("keydown", (e) => {
-      if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) return;
-      const active = document.activeElement;
-      if (!active?.classList?.contains("jump-chip")) return;
-
-      const chipsArr = Array.from(chips);
-      let idx = chipsArr.indexOf(active);
-      if (idx < 0) return;
-
-      if (e.key === "ArrowRight" || e.key === "ArrowDown") idx = Math.min(idx + 1, chipsArr.length - 1);
-      if (e.key === "ArrowLeft" || e.key === "ArrowUp") idx = Math.max(idx - 1, 0);
-
-      chipsArr[idx].focus();
-      chipsArr[idx].click();
+      setActiveSection("timeline");
     });
   }
 
@@ -232,11 +255,11 @@
       gsap.to(el, {
         opacity: 1,
         y: 0,
-        duration: 0.45,
+        duration: 0.5,
         ease: "power2.out",
         scrollTrigger: {
           trigger: el,
-          start: "top 94%",
+          start: "top 93%",
           toggleActions: "play none none none",
         },
       });
@@ -251,12 +274,10 @@
     if (!target) return;
 
     window.setTimeout(() => {
-      const milestoneMatch = hash.match(/^#milestone-(\d+)$/);
-      if (milestoneMatch) {
-        highlightMilestone(parseInt(milestoneMatch[1], 10));
-      }
+      const m = hash.match(/^#milestone-(\d+)$/);
+      if (m) highlightMilestone(parseInt(m[1], 10));
       scrollToTarget(target, { duration: prefersReducedMotion ? 0 : 0.5 });
-    }, 150);
+    }, 200);
   }
 
   function init() {
@@ -266,12 +287,14 @@
     initHero();
     initTimeline();
     initLegacy();
+    handleInitialHash();
 
     if (hasGsap) {
+      ScrollTrigger.addEventListener("refresh", () => {
+        /* recalc after mobile chrome resize */
+      });
       ScrollTrigger.refresh();
     }
-
-    handleInitialHash();
   }
 
   function onReady() {
@@ -285,7 +308,21 @@
     window.addEventListener("load", onReady);
   }
 
-  window.addEventListener("resize", () => {
-    if (hasGsap) ScrollTrigger.refresh();
-  });
+  let resizeTimer;
+  window.addEventListener(
+    "resize",
+    () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        if (hasGsap) ScrollTrigger.refresh();
+      }, 200);
+    },
+    { passive: true }
+  );
+
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", () => {
+      if (hasGsap) ScrollTrigger.refresh();
+    });
+  }
 })();
